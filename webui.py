@@ -109,7 +109,9 @@ class WebUI:
         self.seg_scale_end = False
         # from original system初始化高斯模型
         self.points3d = []
-        self.cam_sam_2dpoint={} #获取当前相机位置下用户点击的2D分割点
+        self.cam_sam_2dpoint=[] #获取当前相机位置下用户点击的2D分割点
+        self.cam_sam_2dpoint_fcam=[]
+
         self.gaussian = GaussianModel(
             sh_degree=0,
             anchor_weight_init_g0=1.0,
@@ -989,7 +991,9 @@ class WebUI:
             click_pos = pointer.click_pos  # tuple (float, float)  W, H from 0 to 1
             click_pos = torch.tensor(click_pos)
             if self.save_firstframe_points.value:
-                self.cam_sam_2dpoint.setdefault(self.camera, []).append(click_pos)#保存用户的2D分割点用于后续的删除功能
+                self.cam_sam_2dpoint_fcam.append(self.camera)
+                self.cam_sam_2dpoint.append(click_pos.clone())#保存用户的2D分割点用于后续的删除功能
+            print(f"click_pos{click_pos}")
             self.add_points3d(self.camera, click_pos)
             
             self.viwer_need_update = True
@@ -1033,7 +1037,8 @@ class WebUI:
 
     def clear_points3d(self):
         self.points3d = []
-        self.cam_sam_2dpoint={}
+        self.cam_sam_2dpoint=[]
+        self.cam_sam_2dpoint_fcam=[]
 
     def add_points3d(self, camera, points2d, update_mask=False):
         depth = render(camera, self.gaussian, self.pipe, self.background_tensor)[
@@ -1204,57 +1209,58 @@ class WebUI:
         self.server.set_background_image(out, format="jpeg")
 
     def delete_video(self, edit_cameras, train_frames, train_frustums):
-        import json
-        def save_simple_mp4(tensor_list, output_path, is_mask=False):
-            if not tensor_list:
-                return
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            height, width = 512, 512
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            fps = 30
-            video = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
-            for tensor in tensor_list:
-                frame = tensor[0].detach().cpu().numpy()  # 去掉批次维度
-                print(f"frame_shape:{frame.shape}")
-                if is_mask:
-                    frame = (frame * 255).astype(np.uint8)
-                    if len(frame.shape) == 2:  # 灰度图
-                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
-                else:
-                    if frame.dtype != np.uint8:
-                        if frame.min() < 0:  # 假设是[-1, 1]范围
-                            frame = ((frame + 1) / 2 * 255).astype(np.uint8)
-                        else:  # 假设是[0, 1]范围
-                            frame = (frame * 255).astype(np.uint8)
-                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+        # import json
+        # from decord import VideoReader, cpu
 
-                video.write(frame)
-            video.release()
-            print(f"视频已保存: {output_path}")
-        if len(self.cam_sam_2dpoint) == 0:
-            return 
-        no_prune_frames=[]
+        # def save_simple_mp4(tensor_list, output_path, is_mask=False):
+        #     if not tensor_list:
+        #         return
+        #     os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        #     height, width = 512, 512
+        #     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        #     fps = 30
+        #     video = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+        #     for tensor in tensor_list:
+        #         frame = tensor[0].detach().cpu().numpy()  # 去掉批次维度
+        #         print(f"frame_shape:{frame.shape}")
+        #         if is_mask:
+        #             frame = (frame * 255).astype(np.uint8)
+        #             if len(frame.shape) == 2:  # 灰度图
+        #                 frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        #         else:
+        #             if frame.dtype != np.uint8:
+        #                 if frame.min() < 0:  # 假设是[-1, 1]范围
+        #                     frame = ((frame + 1) / 2 * 255).astype(np.uint8)
+        #                 else:  # 假设是[0, 1]范围
+        #                     frame = (frame * 255).astype(np.uint8)
+        #             frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+        #         video.write(frame)
+        #     video.release()
+        #     print(f"视频已保存: {output_path}")
+        # if len(self.cam_sam_2dpoint) == 0:
+        #     return 
+        # no_prune_frames=[]
         
-        cam_samkeys = list(self.cam_sam_2dpoint.keys())
-        cam_samvalues = list(self.cam_sam_2dpoint.values())
-        firstcam=cam_samkeys[0]
-        firstcam_points=cam_samvalues[0]
+        # firstcam=self.cam_sam_2dpoint_fcam[0]
+        # firstcam_points=self.cam_sam_2dpoint
+        # print(f"cam_samkeys:{self.cam_sam_2dpoint_fcam[0]}")
+        # print(f"cam_samvalues:{self.cam_sam_2dpoint}")
         
-        first_frameimg=self.render(firstcam)["comp_rgb"]
-        img = first_frameimg.permute(0, 3, 1, 2).contiguous().float()
-        img_512 = F.interpolate(img, size=(512, 512), mode="bilinear", align_corners=False)
-        img_512 = img_512.permute(0, 2, 3, 1).contiguous()
-        no_prune_frames.append(img_512)
+        # first_frameimg=self.render(firstcam)["comp_rgb"]
+        # img = first_frameimg.permute(0, 3, 1, 2).contiguous().float()
+        # img_512 = F.interpolate(img, size=(512, 512), mode="bilinear", align_corners=False)
+        # img_512 = img_512.permute(0, 2, 3, 1).contiguous()
+        # no_prune_frames.append(img_512)
 
-        #把分割的2d写入json中，方便后续传参
-        points_list = [p.tolist() for p in firstcam_points]  # [[x,y], [x,y], ...]
-        points_json = json.dumps(points_list)
-        print(points_json)
+        # #把分割的2d写入json中，方便后续传参
+        # # points_list = [p.tolist() for p in firstcam_points]  # [[x,y], [x,y], ...]
+        # # points_json = json.dumps(points_list)
 
-        for idx, cam in enumerate(edit_cameras):
-            res = self.render(cam)
-            rgb = res["comp_rgb"]
-            no_prune_frames.append(rgb)
+        # for idx, cam in enumerate(edit_cameras):
+        #     res = self.render(cam)
+        #     rgb = res["comp_rgb"]
+        #     no_prune_frames.append(rgb)
         
         dist_thres = (
             self.inpaint_scale.value * self.cameras_extent * self.gaussian.percent_dense
@@ -1269,22 +1275,32 @@ class WebUI:
         #     edit_cameras, train_frames, train_frustums
         # )
         #inpaint_2D_mask是需要的mask，origin_frames是原始的rgb图像
-        random_seed = 42
-        video_length=len(no_prune_frames)
+        # random_seed = 42
+        # video_length=len(no_prune_frames)
         
-        print(f"video_length:{video_length}")
+        # print(f"video_length:{video_length}")
 
-        save_simple_mp4(no_prune_frames, "./outputs/origin.mp4", is_mask=False)
-        cmd = [
-                "conda","run","-n","remover",
-                "python","pipe_rem.py",
-                "--video_path", "/root/autodl-tmp/GaussianEditor-master/outputs/origin.mp4",
-                "--video_length", str(video_length),
-                "--points_json", points_json
-            ]
-        subprocess.run(cmd, check=True, cwd="/root/autodl-tmp/GaussianEditor-master/remover/gradio_demo")
-
-        # remove_frames={}
+        # save_simple_mp4(no_prune_frames, "./outputs/origin.mp4", is_mask=False)
+        # cmd = [
+        #         "conda","run","-n","remover",
+        #         "python","pipe_rem.py",
+        #         "--video_path", "/root/autodl-tmp/GaussianEditor-master/outputs/origin.mp4",
+        #         "--video_length", str(video_length),
+        #         "--points_json", points_json
+        #     ]
+        # subprocess.run(cmd, check=True, cwd="/root/autodl-tmp/GaussianEditor-master/remover/gradio_demo")
+        
+        # def video_to_tensor_list_skip_first(video_path, size=512):
+        #     vr = VideoReader(video_path, ctx=cpu(0))
+        #     out = []
+        #     for i in range(1, len(vr)):  # 跳过第0帧
+        #         frame = vr[i].asnumpy()                 # HWC, uint8
+        #         frame = cv2.resize(frame, (size, size)) # 统一到 512x512
+        #         t = torch.from_numpy(frame).permute(2, 0, 1).float() / 255.0  # (3,H,W), float[0,1]
+        #         out.append(t)
+        #     return out
+        # remove_frames = video_to_tensor_list_skip_first("./outputs/out.mp4", size=512)
+        # remove_frames=[]
         # view_index_stack = list(range(len(edit_cameras)))
         # for step in tqdm(range(self.edit_train_steps.value)):
         #     if not view_index_stack:
