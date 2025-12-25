@@ -10,7 +10,7 @@ from gaussiansplatting.scene.cameras import Simple_Camera
 from threestudio.utils.dpt import DPT
 from torchvision.ops import masks_to_boxes
 from gaussiansplatting.utils.graphics_utils import fov2focal
-
+import torch.nn.functional as F
 import viser
 import viser.transforms as tf
 from dataclasses import dataclass, field
@@ -40,6 +40,7 @@ from threestudio.utils.typing import *
 from threestudio.utils.transform import rotate_gaussians
 from gaussiansplatting.gaussian_renderer import render, point_cloud_render
 from gaussiansplatting.scene import GaussianModel
+from threestudio.utils.perceptual import PerceptualLoss
 
 from gaussiansplatting.scene.vanilla_gaussian_model import (
     GaussianModel as VanillaGaussianModel,
@@ -63,7 +64,7 @@ from threestudio.utils.misc import (
     fill_closed_areas,
 )
 from threestudio.utils.sam import LangSAMTextSegmentor
-from threestudio.utils.camera import camera_ray_sample_points, project, unproject
+from threestudio.utils.camera import camera_ray_sample_points, project, unproject, unproject2
 
 # from threestudio.utils.dpt import DPT
 # from threestudio.utils.config import parse_structured
@@ -108,6 +109,7 @@ class WebUI:
         self.seg_scale_end = False
         # from original system初始化高斯模型
         self.points3d = []
+        self.cam_sam_2dpoint={} #获取当前相机位置下用户点击的2D分割点
         self.gaussian = GaussianModel(
             sh_degree=0,
             anchor_weight_init_g0=1.0,
@@ -204,6 +206,9 @@ class WebUI:
             self.add_sam_points = self.server.add_gui_checkbox(
                 "Add SAM Points", initial_value=False #如果勾上，可以在 2D 画面上点击添加 point prompt 给 SAM
             )
+            self.save_firstframe_points = self.server.add_gui_checkbox(
+                "Save First Frame SAM Points", initial_value=False #
+            )
             self.sam_group_name = self.server.add_gui_text(
                 "SAM Group Name", initial_value="table" #为当前分割出的物体起一个语义组名字，比如 "table"
             )
@@ -237,7 +242,7 @@ class WebUI:
 
         with self.server.add_gui_folder("Edit Setting"):
             self.edit_type = self.server.add_gui_dropdown(
-                "Edit Type", ("Edit", "Delete", "Add")
+                "Edit Type", ("Edit", "Delete_base_image", "Delete_base_video", "Add")
             )
             self.guidance_type = self.server.add_gui_dropdown(
                 "Guidance Type", ("InstructPix2Pix", "ControlNet-Pix2Pix")
@@ -488,7 +493,30 @@ class WebUI:
                 self.edit_frame_show.visible = True
                 self.guidance_type.visible = True
 
-            elif self.edit_type.value == "Delete":
+            elif self.edit_type.value == "Delete_base_image":
+                self.edit_text.visible = True
+                self.refine_text.visible = False
+                for term in self.anchor_term:
+                    term.visible = True
+                self.inpaint_scale.visible = True
+                self.mask_dilate.visible = True
+                self.fix_holes.visible = True
+                self.edit_cam_num.value = 24
+                self.densification_interval.value = 50
+                self.per_editing_step.visible = False
+                self.edit_begin_step.visible = False
+                self.edit_until_step.visible = False
+                self.draw_bbox.visible = False
+                self.left_up.visible = False
+                self.right_down.visible = False
+                self.inpaint_seed.visible = False
+                self.inpaint_end.visible = False
+                self.depth_scaler.visible = False
+                self.depth_end.visible = False
+                self.edit_frame_show.visible = True
+                self.guidance_type.visible = False
+
+            elif self.edit_type.value == "Delete_base_video":
                 self.edit_text.visible = True
                 self.refine_text.visible = False
                 for term in self.anchor_term:
@@ -581,8 +609,11 @@ class WebUI:
                 if self.edit_type.value == "Edit":
                     self.edit(edit_cameras, train_frames, train_frustums)
 
-                elif self.edit_type.value == "Delete":
+                elif self.edit_type.value == "Delete_base_image":
                     self.delete(edit_cameras, train_frames, train_frustums)
+
+                elif self.edit_type.value == "Delete_base_video":
+                    self.delete_video(edit_cameras, train_frames, train_frustums)
 
                 ui_utils.remove_all(train_frames)
                 ui_utils.remove_all(train_frustums)
@@ -952,13 +983,15 @@ class WebUI:
         return Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
 
     def click_cb(self, pointer):
+        import torch.nn.functional as F
         if self.sam_enabled.value and self.add_sam_points.value:
             assert hasattr(pointer, "click_pos"), "please install our forked viser"
             click_pos = pointer.click_pos  # tuple (float, float)  W, H from 0 to 1
             click_pos = torch.tensor(click_pos)
-
+            if self.save_firstframe_points.value:
+                self.cam_sam_2dpoint.setdefault(self.camera, []).append(click_pos)#保存用户的2D分割点用于后续的删除功能
             self.add_points3d(self.camera, click_pos)
-
+            
             self.viwer_need_update = True
         elif self.draw_bbox.value:
             assert hasattr(pointer, "click_pos"), "please install our forked viser"
@@ -1000,12 +1033,13 @@ class WebUI:
 
     def clear_points3d(self):
         self.points3d = []
+        self.cam_sam_2dpoint={}
 
     def add_points3d(self, camera, points2d, update_mask=False):
         depth = render(camera, self.gaussian, self.pipe, self.background_tensor)[
             "depth_3dgs"
         ]
-        unprojected_points3d = unproject(camera, points2d, depth)
+        unprojected_points3d = unproject2(camera, points2d, depth)
         self.points3d += unprojected_points3d.unbind(0)
 
         if update_mask:
@@ -1169,6 +1203,134 @@ class WebUI:
         out = self.prepare_output_image(output)
         self.server.set_background_image(out, format="jpeg")
 
+    def delete_video(self, edit_cameras, train_frames, train_frustums):
+        import json
+        def save_simple_mp4(tensor_list, output_path, is_mask=False):
+            if not tensor_list:
+                return
+            os.makedirs(os.path.dirname(output_path), exist_ok=True)
+            height, width = 512, 512
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = 30
+            video = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+            for tensor in tensor_list:
+                frame = tensor[0].detach().cpu().numpy()  # 去掉批次维度
+                print(f"frame_shape:{frame.shape}")
+                if is_mask:
+                    frame = (frame * 255).astype(np.uint8)
+                    if len(frame.shape) == 2:  # 灰度图
+                        frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+                else:
+                    if frame.dtype != np.uint8:
+                        if frame.min() < 0:  # 假设是[-1, 1]范围
+                            frame = ((frame + 1) / 2 * 255).astype(np.uint8)
+                        else:  # 假设是[0, 1]范围
+                            frame = (frame * 255).astype(np.uint8)
+                    frame = cv2.cvtColor(frame, cv2.COLOR_RGB2BGR)
+
+                video.write(frame)
+            video.release()
+            print(f"视频已保存: {output_path}")
+        if len(self.cam_sam_2dpoint) == 0:
+            return 
+        no_prune_frames=[]
+        
+        cam_samkeys = list(self.cam_sam_2dpoint.keys())
+        cam_samvalues = list(self.cam_sam_2dpoint.values())
+        firstcam=cam_samkeys[0]
+        firstcam_points=cam_samvalues[0]
+        
+        first_frameimg=self.render(firstcam)["comp_rgb"]
+        img = first_frameimg.permute(0, 3, 1, 2).contiguous().float()
+        img_512 = F.interpolate(img, size=(512, 512), mode="bilinear", align_corners=False)
+        img_512 = img_512.permute(0, 2, 3, 1).contiguous()
+        no_prune_frames.append(img_512)
+
+        #把分割的2d写入json中，方便后续传参
+        points_list = [p.tolist() for p in firstcam_points]  # [[x,y], [x,y], ...]
+        points_json = json.dumps(points_list)
+        print(points_json)
+
+        for idx, cam in enumerate(edit_cameras):
+            res = self.render(cam)
+            rgb = res["comp_rgb"]
+            no_prune_frames.append(rgb)
+        
+        dist_thres = (
+            self.inpaint_scale.value * self.cameras_extent * self.gaussian.percent_dense
+        )
+        valid_remaining_idx = self.gaussian.get_near_gaussians_by_mask(
+            self.gaussian.mask, dist_thres*2
+        )
+        # Prune and update mask to valid_remaining_idx
+        self.gaussian.prune_with_mask(new_mask=valid_remaining_idx)
+
+        # inpaint_2D_mask, origin_frames = self.render_all_view_with_mask(
+        #     edit_cameras, train_frames, train_frustums
+        # )
+        #inpaint_2D_mask是需要的mask，origin_frames是原始的rgb图像
+        random_seed = 42
+        video_length=len(no_prune_frames)
+        
+        print(f"video_length:{video_length}")
+
+        save_simple_mp4(no_prune_frames, "./outputs/origin.mp4", is_mask=False)
+        cmd = [
+                "conda","run","-n","remover",
+                "python","pipe_rem.py",
+                "--video_path", "/root/autodl-tmp/GaussianEditor-master/outputs/origin.mp4",
+                "--video_length", str(video_length),
+                "--points_json", points_json
+            ]
+        subprocess.run(cmd, check=True, cwd="/root/autodl-tmp/GaussianEditor-master/remover/gradio_demo")
+
+        # remove_frames={}
+        # view_index_stack = list(range(len(edit_cameras)))
+        # for step in tqdm(range(self.edit_train_steps.value)):
+        #     if not view_index_stack:
+        #         view_index_stack = list(range(len(edit_cameras)))
+        #     view_index = random.choice(view_index_stack)
+        #     view_index_stack.remove(view_index)
+        #     rendering = self.render(edit_cameras[view_index], train=True)["comp_rgb"]
+        #     self.gaussian.update_learning_rate(step)
+            
+        #     remove_frames[view_index] = self.to_tensor(out[view_index]).to("cuda")[None].permute(0,2,3,1)
+        #     self.train_frustums[view_index].remove()
+        #     visible=True
+        #     self.train_frustums[view_index] = ui_utils.new_frustums(view_index, train_frames[view_index],
+        #                                                         edit_cameras[view_index], remove_frames[view_index],
+        #                                                         visible, self.server)
+        #     gt_image = remove_frames[view_index]
+        #     perceptual_loss = PerceptualLoss().eval().to(get_device())
+        #     lambda_l1=self.lambda_l1.value
+        #     lambda_p=self.lambda_p.value
+        #     lambda_anchor_color=self.lambda_anchor_color.value
+        #     lambda_anchor_geo=self.lambda_anchor_geo.value
+        #     lambda_anchor_scale=self.lambda_anchor_scale.value
+        #     lambda_anchor_opacity=self.lambda_anchor_opacity.value
+
+        #     loss = lambda_l1 * torch.nn.functional.l1_loss(rendering, gt_image) + \
+        #        lambda_p * perceptual_loss(rendering.permute(0, 3, 1, 2).contiguous(),
+        #                                                 gt_image.permute(0, 3, 1, 2).contiguous(), ).sum()
+        #     if (self.lambda_anchor_color > 0 or self.lambda_anchor_geo > 0
+        #         or self.lambda_anchor_scale > 0
+        #         or self.lambda_anchor_opacity > 0):
+        #         anchor_out = self.gaussian.anchor_loss()
+        #         loss += lambda_anchor_color * anchor_out['loss_anchor_color'] + \
+        #                 lambda_anchor_geo * anchor_out['loss_anchor_geo'] + \
+        #                 lambda_anchor_opacity * anchor_out['loss_anchor_opacity'] + \
+        #                 lambda_anchor_scale * anchor_out['loss_anchor_scale']
+            
+        #     loss.backward()
+
+        #     self.densify_and_prune(step)
+
+        #     self.gaussian.optimizer.step()
+        #     self.gaussian.optimizer.zero_grad(set_to_none=True)
+        #     if self.stop_training:
+        #         self.stop_training = False
+        #         return
+            
     def delete(self, edit_cameras, train_frames, train_frustums):
         if not self.ctn_inpaint:
             from diffusers import (
@@ -1200,6 +1362,7 @@ class WebUI:
             edit_cameras[0].image_height // self.ctn_inpaint.vae_scale_factor,
             edit_cameras[0].image_height // self.ctn_inpaint.vae_scale_factor,
         )
+        print(f"edit_cameras:{edit_cameras[0].image_height}")
 
         latents = torch.zeros(shape, dtype=torch.float16, device="cuda")
 
@@ -1207,7 +1370,7 @@ class WebUI:
             self.inpaint_scale.value * self.cameras_extent * self.gaussian.percent_dense
         )
         valid_remaining_idx = self.gaussian.get_near_gaussians_by_mask(
-            self.gaussian.mask, dist_thres
+            self.gaussian.mask, dist_thres*2
         )
         # Prune and update mask to valid_remaining_idx
         self.gaussian.prune_with_mask(new_mask=valid_remaining_idx)
