@@ -1,12 +1,13 @@
+
 import torch
 
 from threestudio.utils.misc import get_device, step_check, dilate_mask, erode_mask, fill_closed_areas
 from threestudio.utils.perceptual import PerceptualLoss
 import ui_utils
 from threestudio.models.prompt_processors.stable_diffusion_prompt_processor import StableDiffusionPromptProcessor
-import ImageReward as RM
-from utils.rgbd_warping import reproject_rgbd, reprojected2img
 from torchvision.transforms.functional import to_pil_image
+import ImageReward as RM
+# Diffusion model (cached) + prompts + edited_frames + training config
 
 def tensor_to_pil(img: torch.Tensor):
     """
@@ -18,11 +19,9 @@ def tensor_to_pil(img: torch.Tensor):
     img = img.permute(2, 0, 1)  # HWC -> CHW
     return to_pil_image(img)
 
-# Diffusion model (cached) + prompts + edited_frames + training config
-
-class EditGuidance:
-    def __init__(self, guidance, gaussian, origin_frames, frame_2D_masks, text_prompt, reward_text, per_editing_step, edit_begin_step,
-                 edit_until_step, camera_dist_order, rendered_depth_list, lambda_l1, lambda_p, lambda_anchor_color, lambda_anchor_geo, lambda_anchor_scale,
+class EditGuidance2:
+    def __init__(self, guidance, gaussian, origin_frames, text_prompt, reward_text, per_editing_step, edit_begin_step,
+                 edit_until_step, lambda_l1, lambda_p, lambda_anchor_color, lambda_anchor_geo, lambda_anchor_scale,
                  lambda_anchor_opacity, train_frames, train_frustums, cams, server
                  ):
         self.guidance = guidance
@@ -30,31 +29,33 @@ class EditGuidance:
         self.per_editing_step = per_editing_step
         self.edit_begin_step = edit_begin_step
         self.edit_until_step = edit_until_step
-        self.camera_dist_order = camera_dist_order
-        self.rendered_depth_list = rendered_depth_list
         self.lambda_l1 = lambda_l1
         self.lambda_p = lambda_p
         self.lambda_anchor_color = lambda_anchor_color
         self.lambda_anchor_geo = lambda_anchor_geo
         self.lambda_anchor_scale = lambda_anchor_scale
         self.lambda_anchor_opacity = lambda_anchor_opacity
-        self.origin_frames = origin_frames 
-        self.frame_2D_masks=frame_2D_masks #局部mask
+        self.origin_frames = origin_frames
         self.cams = cams
         self.server = server
         self.train_frames = train_frames
         self.train_frustums = train_frustums
         self.edit_frames = {}
         self.visible = True
-        self.prompt_utils =text_prompt
-        self.reward_text=reward_text
-        self.perceptual_loss = PerceptualLoss().eval().to(get_device())
         self.reward_model = RM.load("ImageReward-v1.0")
+        self.reward_text=reward_text
+        self.prompt_utils = StableDiffusionPromptProcessor(
+            {
+                "pretrained_model_name_or_path": "runwayml/stable-diffusion-v1-5",
+                "prompt": text_prompt,
+            }
+        )()
+        self.perceptual_loss = PerceptualLoss().eval().to(get_device())
         self.reward_ema_mean = 0.0
         self.reward_ema_var = 1.0
         self.reward_beta = 0.99
 
-    def __call__(self, rendering, view_index, step, edited_image_list):
+    def __call__(self, rendering, view_index, step):
         self.gaussian.update_learning_rate(step)
 
         # nerf2nerf loss
@@ -65,77 +66,11 @@ class EditGuidance:
                 < self.edit_until_step
                 and step % self.per_editing_step == 0
         ):
-            
-            src_cam_idx_list = list(self.camera_dist_order[view_index][1:2])
-
-            dst_camera = self.cams[view_index]
-
-            reprejected_pixels_list = []
-            reprejected_colors_list = []
-            for camera_idx in src_cam_idx_list:
-                camera = self.cams[camera_idx]
-
-                # print(f"edited_image_list[camera_idx]:{edited_image_list[camera_idx].shape}")
-                # print(f"self.rendered_depth_list[camera_idx]:{self.rendered_depth_list[camera_idx].shape}")
-
-                color = edited_image_list[camera_idx].squeeze(0).detach()
-                depth = self.rendered_depth_list[camera_idx].squeeze(0).detach()
-
-                reprejected_points, reprejected_colors = reproject_rgbd(
-                    camera,
-                    dst_camera,
-                    color.to(get_device()),
-                    depth.to(get_device()),
-                )
-
-                reprejected_pixels_list.append(reprejected_points)
-                reprejected_colors_list.append(reprejected_colors)
-
-            dst_image, _ = reprojected2img(
-                    reprejected_pixels_list,
-                    reprejected_colors_list,
-                    dst_camera,
-                    alpha_blend=True,
-                )
-            reprejected_image = dst_image.unsqueeze(0)
-
-            mask=self.frame_2D_masks[view_index].unsqueeze(0)
-            # print(f"self.frame_2D_masks[view_index]:{self.frame_2D_masks[view_index].shape}")
-            try:
-                if mask.shape[0] != 1:
-                    mask = mask[0]
-
-                if len(mask.shape) == 2:
-                    mask = mask.unsqueeze(0)
-            except:
-                mask = torch.ones((1, 512, 512)).to(get_device())
-
-            # background replacement
-            # print(f"reprejected_image:{reprejected_image.shape}")
-            # print(f"mask:{mask.shape}")
-            MF_image = reprejected_image * mask.to(reprejected_image.device)
-            mask_bool = mask.bool().to(get_device())
-
-            origin = self.origin_frames[view_index]
-            origin = origin.to(get_device())
-            if origin.dim() == 4 and origin.shape[-1] == 3:   # NHWC -> NCHW
-                origin = origin.permute(0, 3, 1, 2).contiguous()
-            elif origin.dim() == 3 and origin.shape[-1] == 3: # HWC -> CHW then add batch
-                origin = origin.permute(2, 0, 1).unsqueeze(0).contiguous()
-
-            # print(f"origin:{origin.shape}")
-            MF_image = MF_image + (origin * ~mask_bool)
-
-            MF_image = MF_image.permute(0, 2, 3, 1).contiguous()
-            # print(f"MF_image:{MF_image.shape}")
-            # print(f"rendering:{rendering.shape}")
             result = self.guidance(
                 rendering,
-                MF_image,
+                self.origin_frames[view_index],
                 self.prompt_utils,
             )
-            edited_image_list[view_index] = result["edit_images"].detach().clone()
-
             self.edit_frames[view_index] = result["edit_images"].detach().clone() # 1 H W C
             self.train_frustums[view_index].remove()
             self.train_frustums[view_index] = ui_utils.new_frustums(view_index, self.train_frames[view_index],
@@ -143,15 +78,14 @@ class EditGuidance:
             # print("edited image index", cur_index)
 
         gt_image = self.edit_frames[view_index]
-        # print(f"gt_image:{gt_image.shape}")
 
-        #评分
         with torch.no_grad():
             pil_img = tensor_to_pil(gt_image)
             _, reward = self.reward_model.inference_rank(self.reward_text, [pil_img])
 
         with torch.no_grad():
             r = float(reward)  # ImageReward 输出是 list
+            print(f"cur eidted image reward:{reward}")
 
         # EMA 归一化
         delta = r - self.reward_ema_mean
@@ -167,7 +101,6 @@ class EditGuidance:
 
         reward_weight = 1.0 + alpha * torch.tanh(torch.tensor(z / temperature, device=rendering.device))
         reward_weight = reward_weight.clamp(w_min, w_max)
-        
 
         loss_edit = self.lambda_l1 * torch.nn.functional.l1_loss(rendering, gt_image) + \
                     self.lambda_p * self.perceptual_loss(rendering.permute(0, 3, 1, 2).contiguous(),
@@ -189,4 +122,3 @@ class EditGuidance:
             
         loss = reward_weight * loss_edit + loss_anchor
         return loss
-

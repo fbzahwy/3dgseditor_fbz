@@ -6,8 +6,8 @@ from threestudio.utils.misc import get_device, step_check, dilate_mask, erode_ma
 from threestudio.utils.perceptual import PerceptualLoss
 from torchvision.transforms.functional import to_pil_image
 from torchvision.transforms import ToTensor
-
 from threestudio.models.prompt_processors.stable_diffusion_prompt_processor import StableDiffusionPromptProcessor
+
 
 # Diffusion model (cached) + prompts + edited_frames + training config
 
@@ -59,18 +59,20 @@ class DelGuidance:
             return image
 
         control_image = make_inpaint_condition(image_in_pil, mask_in_pil).to("cuda")
-        generator = torch.Generator(device="cuda").manual_seed(0)
+        generator = torch.Generator(device="cuda").manual_seed(42)
+        #strength=0.50,guidance_scale=10,controlnet_conditioning_scale = 1.0,
+        #negative_prompt="new object, extra elements, wood, wooden table, changed structure, changed color, text, logo, watermark, pattern, stylized, artifacts, seams, blur, smudge",
         out = self.guidance(
             self.text_prompt,
-            negative_prompt="extra objects, artifacts, distorted background, blurry details",
             num_inference_steps=20,
             generator=generator,
-            eta=1.0,
+            eta=1,
             image=image_in_pil,
             mask_image=mask_in_pil,
             control_image=control_image,
             latents=self.latents,
         ).images[0]
+
 
         self.edit_frames[view_index] = self.to_tensor(out).to("cuda")[None].permute(0,2,3,1) # 1 C H W to 1 H W C
 
@@ -78,6 +80,7 @@ class DelGuidance:
         self.train_frustums[view_index] = ui_utils.new_frustums(view_index, self.train_frames[view_index],
                                                                 self.cams[view_index], self.edit_frames[view_index],
                                                                 self.visible, self.server)
+
     def __call__(self, rendering, image_in, mask_in, view_index, step):
         self.gaussian.update_learning_rate(step)
         if view_index not in self.edit_frames:

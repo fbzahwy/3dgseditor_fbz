@@ -17,6 +17,7 @@ from dataclasses import dataclass, field
 from viser.theme import TitlebarButton, TitlebarConfig, TitlebarImage
 
 from PIL import Image
+import ImageReward as RM
 from tqdm import tqdm
 import cv2
 import numpy as np
@@ -65,13 +66,16 @@ from threestudio.utils.misc import (
 )
 from threestudio.utils.sam import LangSAMTextSegmentor
 from threestudio.utils.camera import camera_ray_sample_points, project, unproject, unproject2
+from utils.camera_proximity_utils import find_nearby_camera
 
 # from threestudio.utils.dpt import DPT
 # from threestudio.utils.config import parse_structured
 from gaussiansplatting.scene.camera_scene import CamScene
 import math
 from GUI.EditGuidance import EditGuidance
+from GUI.EditGuidance2 import EditGuidance2
 from GUI.DelGuidance import DelGuidance
+from GUI.Enhance import EnhanceGuidance
 
 # from GUI.AddGuidance import AddGuidance
 import os
@@ -226,7 +230,7 @@ class WebUI:
             )
 
             self.seg_cam_num = self.server.add_gui_slider(
-                "Seg Camera Nums", min=6, max=200, step=1, initial_value=24 #语义追踪时要用几台相机。从 24 个视角做 2D 分割，再融合成 3D 语义 mask
+                "Seg Camera Nums", min=1, max=200, step=1, initial_value=24 #语义追踪时要用几台相机。从 24 个视角做 2D 分割，再融合成 3D 语义 mask
             )
 
             self.mask_thres = self.server.add_gui_slider( #语义 mask 阈值（置信度 > threshold 才算该类）
@@ -254,6 +258,11 @@ class WebUI:
             )
             self.edit_text = self.server.add_gui_text( #编辑文本，比如 “turn the car red”，传给编辑模型
                 "Text",
+                initial_value="",
+                visible=True,
+            )
+            self.reward_text = self.server.add_gui_text( #得分文本
+                "Reward Text",
                 initial_value="",
                 visible=True,
             )
@@ -348,7 +357,7 @@ class WebUI:
 
             with self.server.add_gui_folder("Advanced Options"):
                 self.edit_cam_num = self.server.add_gui_slider( #编辑训练时，每轮用多少视角
-                    "Camera Num", min=12, max=200, step=1, initial_value=48
+                    "Camera Num", min=1, max=200, step=1, initial_value=48
                 )
                 self.edit_train_steps = self.server.add_gui_slider( #本轮编辑的总步数
                     "Total Step", min=0, max=5000, step=100, initial_value=1500
@@ -476,6 +485,7 @@ class WebUI:
         def _(_):
             if self.edit_type.value == "Edit":
                 self.edit_text.visible = True
+                self.reward_text.visible = True
                 self.refine_text.visible = False
                 for term in self.anchor_term:
                     term.visible = True
@@ -497,6 +507,7 @@ class WebUI:
 
             elif self.edit_type.value == "Delete_base_image":
                 self.edit_text.visible = True
+                self.reward_text.visible = False
                 self.refine_text.visible = False
                 for term in self.anchor_term:
                     term.visible = True
@@ -520,6 +531,7 @@ class WebUI:
 
             elif self.edit_type.value == "Delete_base_video":
                 self.edit_text.visible = True
+                self.reward_text.visible = False
                 self.refine_text.visible = False
                 for term in self.anchor_term:
                     term.visible = True
@@ -543,6 +555,7 @@ class WebUI:
 
             elif self.edit_type.value == "Add":
                 self.edit_text.visible = True
+                self.reward_text.visible = False
                 self.refine_text.visible = False
                 for term in self.anchor_term:
                     term.visible = False
@@ -990,10 +1003,10 @@ class WebUI:
             assert hasattr(pointer, "click_pos"), "please install our forked viser"
             click_pos = pointer.click_pos  # tuple (float, float)  W, H from 0 to 1
             click_pos = torch.tensor(click_pos)
-            if self.save_firstframe_points.value:
-                self.cam_sam_2dpoint_fcam.append(self.camera)
-                self.cam_sam_2dpoint.append(click_pos.clone())#保存用户的2D分割点用于后续的删除功能
-            print(f"click_pos{click_pos}")
+            # if self.save_firstframe_points.value:
+            #     self.cam_sam_2dpoint_fcam.append(self.camera)
+            #     self.cam_sam_2dpoint.append(click_pos.clone())#保存用户的2D分割点用于后续的删除功能
+            # print(f"click_pos{click_pos}")
             self.add_points3d(self.camera, click_pos)
             
             self.viwer_need_update = True
@@ -1378,18 +1391,22 @@ class WebUI:
             edit_cameras[0].image_height // self.ctn_inpaint.vae_scale_factor,
             edit_cameras[0].image_height // self.ctn_inpaint.vae_scale_factor,
         )
-        print(f"edit_cameras:{edit_cameras[0].image_height}")
 
         latents = torch.zeros(shape, dtype=torch.float16, device="cuda")
+        # origin_frames=[]
+        # for idx, cam in enumerate(edit_cameras):
+        #     res = self.render(cam)
+        #     rgb = res["comp_rgb"]
+        #     origin_frames.append(rgb)
 
-        dist_thres = (
-            self.inpaint_scale.value * self.cameras_extent * self.gaussian.percent_dense
-        )
-        valid_remaining_idx = self.gaussian.get_near_gaussians_by_mask(
-            self.gaussian.mask, dist_thres*2
-        )
-        # Prune and update mask to valid_remaining_idx
-        self.gaussian.prune_with_mask(new_mask=valid_remaining_idx)
+        # dist_thres = (
+        #     self.inpaint_scale.value * self.cameras_extent * self.gaussian.percent_dense
+        # )
+        # valid_remaining_idx = self.gaussian.get_near_gaussians_by_mask(
+        #     self.gaussian.mask, dist_thres*2
+        # )
+        # # Prune and update mask to valid_remaining_idx
+        # self.gaussian.prune_with_mask(new_mask=valid_remaining_idx)
 
         inpaint_2D_mask, origin_frames = self.render_all_view_with_mask(
             edit_cameras, train_frames, train_frustums
@@ -1438,7 +1455,171 @@ class WebUI:
                 self.stop_training = False
                 return
 
-    # In local edit, the whole gaussian don't need to be visible for edit
+    #使用局部mask（inpaint）的编辑函数
+    # def edit(self, edit_cameras, train_frames, train_frustums):
+    #     from diffusers import (
+    #         DiffusionPipeline,
+    #         ControlNetModel,
+    #         DDIMScheduler,
+    #     )
+
+    #     controlnet = ControlNetModel.from_pretrained(
+    #         'lllyasviel/control_v11f1e_sd15_tile', torch_dtype=torch.float16
+    #     )
+    #     pipe = DiffusionPipeline.from_pretrained(
+    #         "runwayml/stable-diffusion-v1-5",
+    #         custom_pipeline="stable_diffusion_controlnet_img2img",
+    #         controlnet=controlnet,
+    #         torch_dtype=torch.float16,
+    #     ).to("cuda") 
+    #     pipe.enable_model_cpu_offload()
+
+    #     self.ctn_inpaint = pipe
+    #     self.ctn_inpaint.set_progress_bar_config(disable=True)
+    #     self.ctn_inpaint.safety_checker = None
+
+    #     origin_frames = self.render_cameras_list(edit_cameras)
+
+    #     self.guidance = EnhanceGuidance(
+    #         guidance=self.ctn_inpaint,
+    #         gaussian=self.gaussian,
+    #         origin_frames=origin_frames,
+    #         text_prompt=self.edit_text.value,
+    #         per_editing_step=self.per_editing_step.value,
+    #         edit_begin_step=self.edit_begin_step.value,
+    #         edit_until_step=self.edit_until_step.value,
+    #         lambda_l1=self.lambda_l1.value,
+    #         lambda_p=self.lambda_p.value,
+    #         lambda_anchor_color=self.lambda_anchor_color.value,
+    #         lambda_anchor_geo=self.lambda_anchor_geo.value,
+    #         lambda_anchor_scale=self.lambda_anchor_scale.value,
+    #         lambda_anchor_opacity=self.lambda_anchor_opacity.value,
+    #         train_frames=train_frames,
+    #         train_frustums=train_frustums,
+    #         cams=edit_cameras,
+    #         server=self.server,
+    #     )
+
+    #     view_index_stack = list(range(len(edit_cameras)))
+    #     for step in tqdm(range(self.edit_train_steps.value)):
+    #         if not view_index_stack:
+    #             view_index_stack = list(range(len(edit_cameras)))
+    #         view_index = random.choice(view_index_stack)
+    #         view_index_stack.remove(view_index)
+
+    #         rendering = self.render(edit_cameras[view_index], train=True)["comp_rgb"]
+
+    #         loss = self.guidance(rendering, view_index, step)
+    #         loss.backward()
+
+    #         self.densify_and_prune(step)
+
+    #         self.gaussian.optimizer.step()
+    #         self.gaussian.optimizer.zero_grad(set_to_none=True)
+    #         if self.stop_training:
+    #             self.stop_training = False
+    #             return
+
+    # In local edit, the whole gaussian don't need to be visible for edit 经过多视图一致融合的编辑函数
+    # def edit(self, edit_cameras, train_frames, train_frustums):
+    #     from threestudio.models.prompt_processors.stable_diffusion_prompt_processor import StableDiffusionPromptProcessor
+    #     if self.guidance_type.value == "InstructPix2Pix":
+    #         if not self.ip2p:
+    #             from threestudio.models.guidance.instructpix2pix_guidance import (
+    #                 InstructPix2PixGuidance,
+    #             )
+
+    #             self.ip2p = InstructPix2PixGuidance(
+    #                 OmegaConf.create({"min_step_percent": 0.02, "max_step_percent": 0.98})
+    #             )
+    #         cur_2D_guidance = self.ip2p
+    #         print("using InstructPix2Pix!")
+    #     elif self.guidance_type.value == "ControlNet-Pix2Pix":
+    #         if not self.ctn_ip2p:
+    #             from threestudio.models.guidance.controlnet_guidance import (
+    #                 ControlNetGuidance,
+    #             )
+
+    #             self.ctn_ip2p = ControlNetGuidance(
+    #                 OmegaConf.create({"min_step_percent": 0.05,
+    #                                   "max_step_percent": 0.8,
+    #                                     "control_type": "p2p"})
+    #             )
+    #         cur_2D_guidance = self.ctn_ip2p
+    #         print("using ControlNet-InstructPix2Pix!")
+
+    #     camera_dist_order, _ = find_nearby_camera(edit_cameras)
+
+    #     #主要拿到mask
+    #     frame_2D_masks, origin_frames, rendered_depth_list = self.render_all_view_with_mask_only(edit_cameras)
+    #     # inpaint_2D_mask, origin_frames = self.render_all_view_with_mask(
+    #     #     edit_cameras, train_frames, train_frustums
+    #     # )
+
+    #     prompt_utils = StableDiffusionPromptProcessor(
+    #                 {
+    #                     "pretrained_model_name_or_path": "runwayml/stable-diffusion-v1-5",
+    #                     "prompt": self.edit_text.value,
+    #                 })()
+
+    #     with torch.no_grad():
+    #         edited_image_list = []
+    #         for step, origin_frame in enumerate(tqdm(origin_frames, desc="Initial editing progress")):
+    #             origin_frame = origin_frame.to(device="cuda")
+
+    #             edited_image = cur_2D_guidance(
+    #                 origin_frame,
+    #                 origin_frame,
+    #                 prompt_utils,
+    #             )
+    #             # safety check
+    #             # print(f"edited_image:{edited_image['edit_images'].shape}") #torch.Size([1, 512, 512, 3])
+    #             edited_image_list.append(edited_image["edit_images"])
+
+    #     self.guidance = EditGuidance(
+    #         guidance=cur_2D_guidance,
+    #         gaussian=self.gaussian,
+    #         origin_frames=origin_frames,
+    #         frame_2D_masks=frame_2D_masks,
+    #         text_prompt=prompt_utils,
+    #         reward_text=self.reward_text.value,
+    #         per_editing_step=self.per_editing_step.value,
+    #         edit_begin_step=self.edit_begin_step.value,
+    #         edit_until_step=self.edit_until_step.value,
+    #         camera_dist_order=camera_dist_order, #相机之间相似排序(N,N)
+    #         rendered_depth_list=rendered_depth_list,
+    #         lambda_l1=self.lambda_l1.value,
+    #         lambda_p=self.lambda_p.value,
+    #         lambda_anchor_color=self.lambda_anchor_color.value,
+    #         lambda_anchor_geo=self.lambda_anchor_geo.value,
+    #         lambda_anchor_scale=self.lambda_anchor_scale.value,
+    #         lambda_anchor_opacity=self.lambda_anchor_opacity.value,
+    #         train_frames=train_frames,
+    #         train_frustums=train_frustums,
+    #         cams=edit_cameras,
+    #         server=self.server,
+    #     )
+
+    #     view_index_stack = list(range(len(edit_cameras)))
+    #     for step in tqdm(range(self.edit_train_steps.value)):
+    #         if not view_index_stack:
+    #             view_index_stack = list(range(len(edit_cameras)))
+    #         view_index = random.choice(view_index_stack)
+    #         view_index_stack.remove(view_index)
+
+    #         rendering = self.render(edit_cameras[view_index], train=True)["comp_rgb"]
+
+    #         loss = self.guidance(rendering, view_index, step, edited_image_list)
+    #         loss.backward()
+
+    #         self.densify_and_prune(step)
+
+    #         self.gaussian.optimizer.step()
+    #         self.gaussian.optimizer.zero_grad(set_to_none=True)
+    #         if self.stop_training:
+    #             self.stop_training = False
+    #             return
+
     def edit(self, edit_cameras, train_frames, train_frustums):
         if self.guidance_type.value == "InstructPix2Pix":
             if not self.ip2p:
@@ -1466,11 +1647,12 @@ class WebUI:
             print("using ControlNet-InstructPix2Pix!")
 
         origin_frames = self.render_cameras_list(edit_cameras)
-        self.guidance = EditGuidance(
+        self.guidance = EditGuidance2(
             guidance=cur_2D_guidance,
             gaussian=self.gaussian,
             origin_frames=origin_frames,
             text_prompt=self.edit_text.value,
+            reward_text=self.reward_text.value,
             per_editing_step=self.per_editing_step.value,
             edit_begin_step=self.edit_begin_step.value,
             edit_until_step=self.edit_until_step.value,
@@ -1508,7 +1690,7 @@ class WebUI:
     @torch.no_grad()
     def add(self, cam):
         self.draw_bbox.value = False
-        self.inpaint_seed.visible = True
+        self.inpaint_seed.visible = True    
         self.inpaint_end.visible = True
         self.refine_text.visible = True
         self.draw_bbox.visible = False
@@ -1969,6 +2151,23 @@ class WebUI:
                 idx, train_frames[idx], cam, mask_view, True, self.server
             )
         return inpaint_2D_mask, origin_frames
+    
+    @torch.no_grad()
+    def render_all_view_with_mask_only(self, edit_cameras):
+        inpaint_2D_mask = []
+        origin_frames = []
+        rendered_depth_list = []
+        for idx, cam in enumerate(edit_cameras):
+            res = self.render(cam)
+            rgb, mask, depth = res["comp_rgb"], res["masks"], res["depth_3dgs"]
+            mask = dilate_mask(mask.to(torch.float32), self.mask_dilate.value)
+            if self.fix_holes.value:
+                mask = fill_closed_areas(mask)
+            inpaint_2D_mask.append(mask)
+            origin_frames.append(rgb)
+            rendered_depth_list.append(depth)
+
+        return inpaint_2D_mask, origin_frames, rendered_depth_list
 
     def add_theme(self):
         buttons = (
@@ -2017,4 +2216,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
     webui = WebUI(args)
     webui.render_loop()
-#python webui.py --colmap_dir ./dataset/bonsai --gs_source ./dataset/bonsai/point_cloud/iteration_7000/point_cloud.ply
+#python webui.py --colmap_dir ./dataset/bonsai --gs_source ./dataset/bonsai/point_cloud/iteration_30000/point_cloud.ply
+#Remove the black stain/ghosting on the purple cloth. Fill the masked area with the same purple fabric as surrounding: identical weave texture, identical purple color tone, consistent lighting and shading, seamless transition, no change outside the mask.
+#python webui.py --colmap_dir ./dataset/m60 --gs_source ./dataset/m60/point_cloud/iteration_7000/point_cloud.ply
+#python webui.py --colmap_dir ./dataset/face --gs_source ./dataset/face/point_cloud.ply
