@@ -106,94 +106,120 @@
 # if __name__=='__main__':
 #     load_ply("./dataset/tank/sample.ply")
 
-import cv2
-import os
-import glob
+# import cv2
+# import os
+# import glob
 
-def images_to_mp4(image_folder, output_file, fps=30):
-    """
-    将图片文件夹转换为MP4视频
+# def images_to_mp4(image_folder, output_file, fps=30):
+#     """
+#     将图片文件夹转换为MP4视频
     
-    参数:
-    image_folder: 图片文件夹路径
-    output_file: 输出视频文件路径（如：output.mp4）
-    fps: 帧率（每秒帧数），默认30
-    """
+#     参数:
+#     image_folder: 图片文件夹路径
+#     output_file: 输出视频文件路径（如：output.mp4）
+#     fps: 帧率（每秒帧数），默认30
+#     """
     
-    # 获取所有.JPG图片文件
-    image_files = glob.glob(os.path.join(image_folder, "*.JPG"))
+#     # 获取所有.JPG图片文件
+#     image_files = glob.glob(os.path.join(image_folder, "*.JPG"))
     
-    # 按文件名排序，确保正确的顺序
-    image_files.sort()
+#     # 按文件名排序，确保正确的顺序
+#     image_files.sort()
     
-    if not image_files:
-        print("在指定文件夹中未找到.JPG图片文件！")
-        return False
+#     if not image_files:
+#         print("在指定文件夹中未找到.JPG图片文件！")
+#         return False
     
-    print(f"找到 {len(image_files)} 张图片")
+#     print(f"找到 {len(image_files)} 张图片")
     
-    # 读取第一张图片获取尺寸
-    img = cv2.imread(image_files[0])
-    if img is None:
-        print(f"无法读取图片：{image_files[0]}")
-        return False
+#     # 读取第一张图片获取尺寸
+#     img = cv2.imread(image_files[0])
+#     if img is None:
+#         print(f"无法读取图片：{image_files[0]}")
+#         return False
     
-    height, width = img.shape[:2]
+#     height, width = img.shape[:2]
     
-    # 输出文件
-    if not output_file.endswith('.mp4'):
-        output_file = output_file.rsplit('.', 1)[0] + '.mp4'
+#     # 输出文件
+#     if not output_file.endswith('.mp4'):
+#         output_file = output_file.rsplit('.', 1)[0] + '.mp4'
     
-    # 尝试不同的编码器
-    codecs_to_try = ['mp4v', 'avc1', 'XVID', 'MJPG']
+#     # 尝试不同的编码器
+#     codecs_to_try = ['mp4v', 'avc1', 'XVID', 'MJPG']
     
-    for codec in codecs_to_try:
-        try:
-            print(f"尝试使用 {codec} 编码器...")
-            fourcc = cv2.VideoWriter_fourcc(*codec)
-            out = cv2.VideoWriter(output_file, fourcc, fps, (width, height))
+#     for codec in codecs_to_try:
+#         try:
+#             print(f"尝试使用 {codec} 编码器...")
+#             fourcc = cv2.VideoWriter_fourcc(*codec)
+#             out = cv2.VideoWriter(output_file, fourcc, fps, (width, height))
             
-            if out.isOpened():
-                print(f"编码器 {codec} 可用，开始创建视频...")
+#             if out.isOpened():
+#                 print(f"编码器 {codec} 可用，开始创建视频...")
                 
-                # 处理每一张图片
-                for i, image_file in enumerate(image_files):
-                    img = cv2.imread(image_file)
-                    if img is not None:
-                        out.write(img)
+#                 # 处理每一张图片
+#                 for i, image_file in enumerate(image_files):
+#                     img = cv2.imread(image_file)
+#                     if img is not None:
+#                         out.write(img)
                         
-                        # 显示进度
-                        if (i + 1) % 10 == 0:
-                            print(f"处理进度: {i + 1}/{len(image_files)}")
+#                         # 显示进度
+#                         if (i + 1) % 10 == 0:
+#                             print(f"处理进度: {i + 1}/{len(image_files)}")
                     
-                out.release()
-                cv2.destroyAllWindows()
+#                 out.release()
+#                 cv2.destroyAllWindows()
                 
-                print(f"\n视频创建完成：{output_file}")
-                print(f"总帧数：{len(image_files)}")
-                print(f"视频时长：{len(image_files)/fps:.2f} 秒")
+#                 print(f"\n视频创建完成：{output_file}")
+#                 print(f"总帧数：{len(image_files)}")
+#                 print(f"视频时长：{len(image_files)/fps:.2f} 秒")
                 
-                # 检查文件大小
-                if os.path.exists(output_file):
-                    file_size = os.path.getsize(output_file) / (1024 * 1024)
-                    print(f"文件大小：{file_size:.2f} MB")
+#                 # 检查文件大小
+#                 if os.path.exists(output_file):
+#                     file_size = os.path.getsize(output_file) / (1024 * 1024)
+#                     print(f"文件大小：{file_size:.2f} MB")
                 
-                return True
-            else:
-                print(f"编码器 {codec} 不可用，尝试下一个...")
+#                 return True
+#             else:
+#                 print(f"编码器 {codec} 不可用，尝试下一个...")
                 
-        except Exception as e:
-            print(f"编码器 {codec} 失败：{e}")
+#         except Exception as e:
+#             print(f"编码器 {codec} 失败：{e}")
     
-    print("所有编码器都失败了！")
-    return False
+#     print("所有编码器都失败了！")
+#     return False
 
 
-if __name__ == "__main__":
-    # 设置你的图片文件夹路径
-    image_folder = "/root/autodl-tmp/GaussianEditor-master/dataset/bonsai/images"
-    output_file = "output.mp4"
-    fps = 30
+# if __name__ == "__main__":
+#     # 设置你的图片文件夹路径
+#     image_folder = "/root/autodl-tmp/GaussianEditor-master/dataset/bonsai/images"
+#     output_file = "output.mp4"
+#     fps = 30
     
-    # 转换为视频
-    images_to_mp4(image_folder, output_file, fps)
+#     # 转换为视频
+#     images_to_mp4(image_folder, output_file, fps)
+
+# import torch
+# from diffusers.utils import export_to_video
+# from decord import VideoReader
+# from diffusers.models import AutoencoderKLWan
+# from remover.transformer_minimax_remover import Transformer3DModel
+# from diffusers.schedulers import UniPCMultistepScheduler
+# from remover.pipeline_minimax_remover import Minimax_Remover_Pipeline
+# from huggingface_hub import snapshot_download
+# import os
+
+# random_seed = 42
+# video_length = 81
+# device = torch.device("cuda:0")
+
+# os.makedirs("./rev_model/", exist_ok=True)
+# snapshot_download(repo_id="zibojia/minimax-remover", local_dir="./rev_model/")
+# print("Download minimax remover completed")
+
+# # Load model weights separately
+# vae = AutoencoderKLWan.from_pretrained("./rev_model/vae", torch_dtype=torch.float16)
+# transformer = Transformer3DModel.from_pretrained("./rev_model/transformer", torch_dtype=torch.float16)
+# scheduler = UniPCMultistepScheduler.from_pretrained("./rev_model/scheduler")
+# import ImageReward as RM
+
+# reward_model = RM.load("ImageReward-v1.0")

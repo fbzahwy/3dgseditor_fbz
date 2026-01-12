@@ -896,6 +896,51 @@ class GaussianModel:
         # valid_remaining_idx = remaining_idx[valid_mask]
 
         return mask_to_update
+    # def get_near_gaussians_by_mask(self, mask, dist_thresh: float = 0.1, delete_object: bool = True):
+    #     mask = mask.squeeze().bool()
+    #     object_xyz = self._xyz[mask]
+    #     remaining_xyz = self._xyz[~mask]
+
+    #     # 物体为空时直接返回
+    #     if object_xyz.numel() == 0:
+    #         return torch.zeros(self._xyz.shape[0], dtype=torch.bool, device=self._xyz.device)
+
+    #     bbox_3D = torch.stack([
+    #         torch.quantile(object_xyz[:, 0], 0.03), torch.quantile(object_xyz[:, 0], 0.97),
+    #         torch.quantile(object_xyz[:, 1], 0.03), torch.quantile(object_xyz[:, 1], 0.97),
+    #         torch.quantile(object_xyz[:, 2], 0.03), torch.quantile(object_xyz[:, 2], 0.97)
+    #     ])
+    #     scale = bbox_3D[1::2] - bbox_3D[0::2]
+    #     mid = (bbox_3D[1::2] + bbox_3D[0::2]) / 2
+    #     scale *= 1.3
+    #     bbox_3D[0::2] = mid - scale / 2
+    #     bbox_3D[1::2] = mid + scale / 2
+
+    #     in_bbox = (
+    #         (remaining_xyz[:, 0] >= bbox_3D[0]) & (remaining_xyz[:, 0] <= bbox_3D[1]) &
+    #         (remaining_xyz[:, 1] >= bbox_3D[2]) & (remaining_xyz[:, 1] <= bbox_3D[3]) &
+    #         (remaining_xyz[:, 2] >= bbox_3D[4]) & (remaining_xyz[:, 2] <= bbox_3D[5])
+    #     )
+    #     in_box_remaining_xyz = remaining_xyz[in_bbox]
+
+    #     # bbox里没有点也能正常返回
+    #     delete_mask = torch.zeros(self._xyz.shape[0], dtype=torch.bool, device=self._xyz.device)
+    #     if delete_object:
+    #         delete_mask |= mask  #物体本身也删除
+
+    #     if in_box_remaining_xyz.numel() == 0:
+    #         return delete_mask
+
+    #     _, _, nn_dist = K_nearest_neighbors(object_xyz, 1, query=in_box_remaining_xyz, return_dist=True)
+    #     nn_dist = nn_dist.squeeze()
+    #     valid_mask = (nn_dist <= dist_thresh)
+
+    #     # 把“remaining里的索引”映射回“全局索引”
+    #     remaining_global_idx = torch.nonzero(~mask, as_tuple=False).squeeze(1)          # [N_remaining]
+    #     in_bbox_global_idx = remaining_global_idx[torch.nonzero(in_bbox, as_tuple=False).squeeze(1)]  # bbox内点的全局idx
+    #     delete_mask[in_bbox_global_idx[valid_mask]] = True                              # ✅ 附近点删除
+
+    #     return delete_mask
 
     def concat_gaussians(self, another_gaussian):
         # return a mask

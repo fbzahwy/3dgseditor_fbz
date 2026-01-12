@@ -116,6 +116,8 @@ class WebUI:
         self.cam_sam_2dpoint=[] #获取当前相机位置下用户点击的2D分割点
         self.cam_sam_2dpoint_fcam=[]
 
+        self.User_add_cam=[] #用户添加相机位姿，用于局部编辑
+
         self.gaussian = GaussianModel(
             sh_degree=0,
             anchor_weight_init_g0=1.0,
@@ -248,7 +250,7 @@ class WebUI:
 
         with self.server.add_gui_folder("Edit Setting"):
             self.edit_type = self.server.add_gui_dropdown(
-                "Edit Type", ("Edit", "Delete_base_image", "Delete_base_video", "Add")
+                "Edit Type", ("Edit", "User_Select_Edit", "Delete_base_image", "Delete_base_video", "Add", "Add_tankM60")
             )
             self.guidance_type = self.server.add_gui_dropdown(
                 "Guidance Type", ("InstructPix2Pix", "ControlNet-Pix2Pix")
@@ -300,6 +302,7 @@ class WebUI:
             self.depth_scaler = self.server.add_gui_slider( #对某个 region 的深度进行缩放（例如让物体离相机更近/更远）
                 "Depth Scale", min=0.0, max=5.0, step=0.01, initial_value=1.0, visible=False
             )
+
             self.depth_end = self.server.add_gui_button(
                 "End Depth Scale!",
                 visible=False,
@@ -310,13 +313,16 @@ class WebUI:
             )
 
             #加入坦克物体
-            self.addpreobj = self.server.add_gui_button("Add tankM60",visible=True)
+            self.addpreobj = self.server.add_gui_button("Add tankM60",visible=False)
+
+            self.add_cam = self.server.add_gui_button("Add selected cam",visible=False)
+
             self.draw_points = self.server.add_gui_checkbox( #是否画框
-                "Draw Points", initial_value=False, visible=True
+                "Draw Points", initial_value=False, visible=False
             )
 
             self.user_add = self.server.add_gui_checkbox(
-                "UserAdd", initial_value=True #勾选后可能会在 2D 面板显示当前渲染帧
+                "UserAdd", initial_value=False 
             )
 
             self.center= self.server.add_gui_vector2(
@@ -325,35 +331,36 @@ class WebUI:
                 step=1,
                 visible=False,
             )
+
             self.user_scale = self.server.add_gui_slider(
-                "User_Scale", min=0, max=100, step=0.1, initial_value=1
+                "User_Scale", min=0, max=100, step=0.1, initial_value=1, visible=False
             )
 
             self.user_input_rotation_x=self.server.add_gui_slider(
-                "User_Rotation_x", min=-180, max=180, step=1, initial_value=0
+                "User_Rotation_x", min=-180, max=180, step=1, initial_value=0, visible=False
             )
 
             self.user_input_rotation_y=self.server.add_gui_slider(
-                "User_Rotation_y", min=-180, max=180, step=1, initial_value=0
+                "User_Rotation_y", min=-180, max=180, step=1, initial_value=0, visible=False
             )
 
             self.user_input_rotation_z=self.server.add_gui_slider(
-                "User_Rotation_z", min=-180, max=180, step=1, initial_value=0
+                "User_Rotation_z", min=-180, max=180, step=1, initial_value=0, visible=False
             )
 
             self.translate_x=self.server.add_gui_slider(
-                "Translate_x", min=-10, max=10, step=0.01, initial_value=0
+                "Translate_x", min=-10, max=10, step=0.01, initial_value=0, visible=False
             )
 
             self.translate_y=self.server.add_gui_slider(
-                "Translate_y", min=-10, max=10, step=0.01, initial_value=0
+                "Translate_y", min=-10, max=10, step=0.01, initial_value=0, visible=False
             )
 
             self.translate_z=self.server.add_gui_slider(
-                "Translate_z", min=-10, max=10, step=0.01, initial_value=0
+                "Translate_z", min=-10, max=10, step=0.01, initial_value=0, visible=False
             )
 
-            self.deletepreobj = self.server.add_gui_button("Delete tankM60",visible=True)
+            self.deletepreobj = self.server.add_gui_button("Delete tankM60",visible=False)
 
             with self.server.add_gui_folder("Advanced Options"):
                 self.edit_cam_num = self.server.add_gui_slider( #编辑训练时，每轮用多少视角
@@ -484,6 +491,7 @@ class WebUI:
         @self.edit_type.on_update
         def _(_):
             if self.edit_type.value == "Edit":
+                self.add_cam.visible = False
                 self.edit_text.visible = True
                 self.reward_text.visible = True
                 self.refine_text.visible = False
@@ -504,8 +512,56 @@ class WebUI:
                 self.depth_end.visible = False
                 self.edit_frame_show.visible = True
                 self.guidance_type.visible = True
+                self.addpreobj.visible = False
+                self.draw_points.visible = False
+                self.user_add.visible = False
+                self.center.visible = False
+                self.user_scale.visible = False
+                self.user_input_rotation_x.visible = False
+                self.user_input_rotation_y.visible = False
+                self.user_input_rotation_z.visible = False
+                self.translate_x.visible = False
+                self.translate_y.visible = False
+                self.translate_z.visible = False
+                self.deletepreobj.visible = False
+            
+            elif self.edit_type.value == "User_Select_Edit":
+                self.add_cam.visible = True
+                self.edit_text.visible = True
+                self.reward_text.visible = True
+                self.refine_text.visible = False
+                for term in self.anchor_term:
+                    term.visible = True
+                self.inpaint_scale.visible = False
+                self.mask_dilate.visible = False
+                self.fix_holes.visible = False
+                self.per_editing_step.visible = True
+                self.edit_begin_step.visible = True
+                self.edit_until_step.visible = True
+                self.draw_bbox.visible = False
+                self.left_up.visible = False
+                self.right_down.visible = False
+                self.inpaint_seed.visible = False
+                self.inpaint_end.visible = False
+                self.depth_scaler.visible = False
+                self.depth_end.visible = False
+                self.edit_frame_show.visible = True
+                self.guidance_type.visible = True
+                self.addpreobj.visible = False
+                self.draw_points.visible = False
+                self.user_add.visible = False
+                self.center.visible = False
+                self.user_scale.visible = False
+                self.user_input_rotation_x.visible = False
+                self.user_input_rotation_y.visible = False
+                self.user_input_rotation_z.visible = False
+                self.translate_x.visible = False
+                self.translate_y.visible = False
+                self.translate_z.visible = False
+                self.deletepreobj.visible = False
 
             elif self.edit_type.value == "Delete_base_image":
+                self.add_cam.visible = False
                 self.edit_text.visible = True
                 self.reward_text.visible = False
                 self.refine_text.visible = False
@@ -528,8 +584,21 @@ class WebUI:
                 self.depth_end.visible = False
                 self.edit_frame_show.visible = True
                 self.guidance_type.visible = False
+                self.addpreobj.visible = False
+                self.draw_points.visible = False
+                self.user_add.visible = False
+                self.center.visible = False
+                self.user_scale.visible = False
+                self.user_input_rotation_x.visible = False
+                self.user_input_rotation_y.visible = False
+                self.user_input_rotation_z.visible = False
+                self.translate_x.visible = False
+                self.translate_y.visible = False
+                self.translate_z.visible = False
+                self.deletepreobj.visible = False
 
             elif self.edit_type.value == "Delete_base_video":
+                self.add_cam.visible = False
                 self.edit_text.visible = True
                 self.reward_text.visible = False
                 self.refine_text.visible = False
@@ -552,8 +621,21 @@ class WebUI:
                 self.depth_end.visible = False
                 self.edit_frame_show.visible = True
                 self.guidance_type.visible = False
+                self.addpreobj.visible = False
+                self.draw_points.visible = False
+                self.user_add.visible = False
+                self.center.visible = False
+                self.user_scale.visible = False
+                self.user_input_rotation_x.visible = False
+                self.user_input_rotation_y.visible = False
+                self.user_input_rotation_z.visible = False
+                self.translate_x.visible = False
+                self.translate_y.visible = False
+                self.translate_z.visible = False
+                self.deletepreobj.visible = False
 
             elif self.edit_type.value == "Add":
+                self.add_cam.visible = False
                 self.edit_text.visible = True
                 self.reward_text.visible = False
                 self.refine_text.visible = False
@@ -575,12 +657,61 @@ class WebUI:
                 self.depth_end.visible = False
                 self.edit_frame_show.visible = False
                 self.guidance_type.visible = False
+                self.addpreobj.visible = False
+                self.draw_points.visible = False
+                self.user_add.visible = False
+                self.center.visible = False
+                self.user_scale.visible = False
+                self.user_input_rotation_x.visible = False
+                self.user_input_rotation_y.visible = False
+                self.user_input_rotation_z.visible = False
+                self.translate_x.visible = False
+                self.translate_y.visible = False
+                self.translate_z.visible = False
+                self.deletepreobj.visible = False
+
+            elif self.edit_type.value=="Add_tankM60":
+                self.edit_text.visible = False
+                self.reward_text.visible = False
+                self.refine_text.visible = False
+                for term in self.anchor_term:
+                    term.visible = False
+                self.inpaint_scale.visible = False
+                self.mask_dilate.visible = False
+                self.fix_holes.visible = False
+                self.per_editing_step.visible = False
+                self.edit_begin_step.visible = False
+                self.edit_until_step.visible = False
+                self.draw_bbox.visible = False
+                self.left_up.visible = False
+                self.right_down.visible = False
+                self.inpaint_seed.visible = False
+                self.inpaint_end.visible = False
+                self.depth_scaler.visible = False
+                self.depth_end.visible = False
+                self.edit_frame_show.visible = False
+                self.guidance_type.visible = False
+                self.addpreobj.visible = True
+                self.draw_points.visible = True
+                self.user_add.visible = True
+                self.center.visible = True
+                self.user_scale.visible = True
+                self.user_input_rotation_x.visible = True
+                self.user_input_rotation_y.visible = True
+                self.user_input_rotation_z.visible = True
+                self.translate_x.visible = True
+                self.translate_y.visible = True
+                self.translate_z.visible = True
+                self.deletepreobj.visible = True
+                
+
 
         @self.save_button.on_click
         def _(_):
             current_time = datetime.datetime.now()
             formatted_time = current_time.strftime("%Y-%m-%d-%H:%M")
             self.gaussian.save_ply(os.path.join("ui_result", "{}.ply".format(formatted_time)))
+
         @self.inpaint_end.on_click
         def _(_):
             self.inpaint_end_flag = True
@@ -597,6 +728,11 @@ class WebUI:
         @self.edit_end_button.on_click
         def _(event: viser.GuiEvent):
             self.stop_training = True
+
+        @self.add_cam.on_click
+        def _(event: viser.GuiEvent):
+            self.User_add_cam.append(self.camera512)
+            print(f"success add cam: {self.camera512}")
 
         @self.edit_begin_button.on_click
         def _(event: viser.GuiEvent):
@@ -618,10 +754,16 @@ class WebUI:
             else:
                 self.edit_frame_show.visible = True
 
-                edit_cameras, train_frames, train_frustums = ui_utils.sample_train_camera(self.colmap_cameras,
+                if self.edit_type.value == "User_Select_Edit" and (self.User_add_cam is not None):
+                    edit_cameras, train_frames, train_frustums = ui_utils.no_sample_train_camera(self.User_add_cam,
+                                                                                          len(self.User_add_cam),
+                                                                                          self.server)
+                else:
+                    edit_cameras, train_frames, train_frustums = ui_utils.sample_train_camera(self.colmap_cameras,
                                                                                           self.edit_cam_num.value,
                                                                                           self.server)
-                if self.edit_type.value == "Edit":
+                if self.edit_type.value == "Edit" or self.edit_type.value == "User_Select_Edit":
+                    print("Edit begin.")
                     self.edit(edit_cameras, train_frames, train_frustums)
 
                 elif self.edit_type.value == "Delete_base_image":
@@ -995,7 +1137,47 @@ class WebUI:
         # aspect = viser_cam.aspect
         width = int(self.resolution_slider.value)
         height = int(width / self.aspect)
-        return Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
+        cam = Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
+        # stash world-pose for downstream visualization (wxyz/position from viewer)
+        cam.wxyz = viser_cam.wxyz
+        cam.position = viser_cam.position
+        return cam
+
+    @property
+    def camera512(self):
+        if len(list(self.server.get_clients().values())) == 0:
+            return None
+        if self.render_cameras is None and self.colmap_dir is not None:
+            self.aspect = list(self.server.get_clients().values())[0].camera.aspect
+            self.render_cameras = CamScene(
+                self.colmap_dir, h=-1, w=-1, aspect=self.aspect
+            ).cameras
+            self.begin_call(list(self.server.get_clients().values())[0])
+        viser_cam = list(self.server.get_clients().values())[0].camera
+        # viser_cam.up_direction = tf.SO3(viser_cam.wxyz) @ np.array([0.0, -1.0, 0.0])
+        # viser_cam.look_at = viser_cam.position
+        R = tf.SO3(viser_cam.wxyz).as_matrix()
+        T = -R.T @ viser_cam.position
+        # T = viser_cam.position
+        if self.render_cameras is None:
+            fovy = viser_cam.fov * self.FoV_slider.value
+        else:
+            fovy = self.render_cameras[0].FoVy * self.FoV_slider.value
+
+        fovx = 2 * math.atan(math.tan(fovy / 2) * self.aspect)
+        # fovy = self.render_cameras[0].FoVy
+        # fovx = self.render_cameras[0].FoVx
+        # math.tan(self.render_cameras[0].FoVx / 2) / math.tan(self.render_cameras[0].FoVy / 2)
+        # math.tan(fovx/2) / math.tan(fovy/2)
+
+        # aspect = viser_cam.aspect
+        width = 512
+        height = 512
+        cam = Simple_Camera(0, R, T, fovx, fovy, height, width, "", 0)
+        # stash world-pose for downstream visualization (wxyz/position from viewer)
+        cam.wxyz = viser_cam.wxyz
+        cam.position = viser_cam.position
+        return cam
 
     def click_cb(self, pointer):
         import torch.nn.functional as F
